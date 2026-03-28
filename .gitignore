@@ -1,0 +1,7 @@
+cookie.txt
+output/
+.venv/
+__pycache__/
+*.pyc
+*.py~
+raw.html
