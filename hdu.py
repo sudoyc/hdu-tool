@@ -3,9 +3,37 @@ hdu-tool — interactive REPL for HDU contest problems
 Usage: uv run python hdu.py [--target-dir PATH]
 """
 import argparse
-import readline
+import re
 import time
 from pathlib import Path
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import Style
+
+_STYLE = Style.from_dict({
+    'completion-menu.completion':         'bg:default fg:default',
+    'completion-menu.completion.current': 'bg:default fg:default bold',
+    'completion-menu':                    'bg:default fg:default',
+})
+
+# ANSI colors
+_G = '\033[32m'   # green
+_R = '\033[31m'   # red
+_Y = '\033[33m'   # yellow
+_C = '\033[36m'   # cyan
+_RST = '\033[0m'
+
+def _color_verdict(v: str) -> str:
+    if v == 'Accepted':                return f'{_G}{v}{_RST}'
+    if v in ('Wrong Answer', 'Runtime Error', 'Time Limit Exceeded',
+             'Memory Limit Exceeded', 'Output Limit Exceeded'):
+        return f'{_R}{v}{_RST}'
+    if v == 'Compilation Error':       return f'{_Y}{v}{_RST}'
+    if v in ('Judging', 'Pending', 'Compiling', 'Running', 'Queuing'):
+        return f'{_C}{v}{_RST}'
+    return v
 
 import requests
 
@@ -165,7 +193,7 @@ def cmd_submit(state: State, args: list[str]):
     print(f"  Time    : {row['time']}")
     print(f"  Memory  : {row['memory']}")
     print(f"  Language: {row['language']}")
-    print(f"  Verdict : {verdict}")
+    print(f"  Verdict : {_color_verdict(verdict)}")
 
     if verdict == 'Compilation Error':
         print()
@@ -193,7 +221,7 @@ def cmd_status(state: State, args: list[str]):
     print(header)
     print('-' * len(header))
     for r in rows:
-        print(f"{r['run_id']:<10} {r['time_str']:<20} {r['pid']:<8} {r['time']:<10} {r['memory']:<10} {r['language']:<8} {r['verdict']}")
+        print(f"{r['run_id']:<10} {r['time_str']:<20} {r['pid']:<8} {r['time']:<10} {r['memory']:<10} {r['language']:<8} {_color_verdict(r['verdict'])}")
 
 
 # ── REPL ──────────────────────────────────────────────────────────────────────
@@ -206,37 +234,39 @@ COMMANDS = {
 }
 
 
-def _setup_readline(state: State):
-    def completer(text: str, n: int):
-        buf = readline.get_line_buffer()
-        tokens = buf.lstrip().split()
-        on_new_token = buf.endswith(' ') or not buf.strip()
+class _HduCompleter(Completer):
+    def __init__(self, state: 'State'):
+        self.state = state
 
-        if not on_new_token and len(tokens) == 1:
-            # completing the command name
-            candidates = [c for c in list(COMMANDS) + ['help', 'exit', 'quit']
-                          if c.startswith(text)]
-        elif tokens and tokens[0] in ('submit', 'fetch') and state.pids:
-            # completing a pid argument
-            already = set(tokens[1:]) if on_new_token else set(tokens[1:-1])
-            candidates = [p for p in state.pids
-                          if p.startswith(text) and p not in already]
-        else:
-            candidates = []
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor.lstrip()
+        tokens = text.split()
+        word = document.get_word_before_cursor(pattern=re.compile(r'[^\s]+'))
 
-        return candidates[n] if n < len(candidates) else None
-
-    readline.set_completer(completer)
-    readline.set_completer_delims(' \t')
-    readline.parse_and_bind('tab: complete')
+        if not tokens or (len(tokens) == 1 and not text.endswith(' ')):
+            # completing command name
+            for cmd in list(COMMANDS) + ['help', 'exit', 'quit']:
+                if cmd.startswith(word):
+                    yield Completion(cmd, start_position=-len(word))
+        elif tokens[0] in ('submit', 'fetch') and self.state.pids:
+            # completing pid
+            already = set(tokens[1:]) if text.endswith(' ') else set(tokens[1:-1])
+            for pid in self.state.pids:
+                if pid.startswith(word) and pid not in already:
+                    yield Completion(pid, start_position=-len(word))
 
 
 def repl(state: State):
-    _setup_readline(state)
+    session: PromptSession = PromptSession(
+        history=InMemoryHistory(),
+        completer=_HduCompleter(state),
+        complete_while_typing=False,
+        style=_STYLE,
+    )
     print("hdu-tool  (type 'help' for commands)")
     while True:
         try:
-            line = input(state.prompt).strip()
+            line = session.prompt(state.prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break

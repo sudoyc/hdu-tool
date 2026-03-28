@@ -186,18 +186,25 @@ def save_problem_dir(target_dir: Path, cid: int, pid: str,
     prob_dir = target_dir / str(cid) / pid
     prob_dir.mkdir(parents=True, exist_ok=True)
 
+    # Always overwrite: problem.md and test data files
     (prob_dir / 'problem.md').write_text(
         to_markdown(pid, title, info, sections), encoding='utf-8')
 
+    # Never overwrite: user's source file
     cpp_dest = prob_dir / f'{pid}.cpp'
-    if SKELETON.exists():
-        shutil.copy2(SKELETON, cpp_dest)
-    else:
-        cpp_dest.write_text('', encoding='utf-8')
+    if not cpp_dest.exists():
+        if SKELETON.exists():
+            shutil.copy2(SKELETON, cpp_dest)
+        else:
+            cpp_dest.write_text('', encoding='utf-8')
 
     first_in, first_out = extract_samples(sections)
-    (prob_dir / 'input.txt').write_text(first_in, encoding='utf-8')
-    (prob_dir / 'output.txt').write_text(first_out, encoding='utf-8')
+    # Never overwrite input.txt / output.txt — user may have edited them
+    if not (prob_dir / 'input.txt').exists():
+        (prob_dir / 'input.txt').write_text(first_in, encoding='utf-8')
+    if not (prob_dir / 'output.txt').exists():
+        (prob_dir / 'output.txt').write_text(first_out, encoding='utf-8')
+    # Always overwrite editor-plugin test files
     (prob_dir / f'{pid}_input0.txt').write_text(first_in, encoding='utf-8')
     (prob_dir / f'{pid}_output0.txt').write_text(first_out, encoding='utf-8')
 
