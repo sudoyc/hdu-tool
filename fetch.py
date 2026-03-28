@@ -1,17 +1,19 @@
 """
-HDU Contest Problem Crawler
-Usage: uv run python fetch.py
+HDU Contest Problem Crawler — submodule
+Imported by hdu.py; not meant to be run directly.
 """
 import getpass
-import sys
-import time
+import shutil
 import requests
 from bs4 import BeautifulSoup
 from pathlib import Path
 
 CREDS_FILE = Path(__file__).parent / 'credentials.txt'
-OUT_BASE = Path(__file__).parent / 'output'
+SKELETON = Path.home() / '.skeleton.cpp'
 DELAY = 0.4
+
+SAMPLE_IN  = {'sample input', '样例输入', '输入样例'}
+SAMPLE_OUT = {'sample output', '样例输出', '输出样例'}
 
 
 class AuthError(Exception):
@@ -23,14 +25,12 @@ class AuthError(Exception):
 def is_auth_failure(resp) -> bool:
     if 'login' in resp.url:
         return True
-    # contest login page contains a password field
     if 'name="password"' in resp.text and '<form' in resp.text:
         return True
     return False
 
 
 def load_credentials() -> tuple[str, str]:
-    """Load saved credentials, or prompt and save them."""
     if CREDS_FILE.exists():
         try:
             text = CREDS_FILE.read_text().strip()
@@ -47,7 +47,6 @@ def load_credentials() -> tuple[str, str]:
 
 
 def login(cid: int) -> requests.Session:
-    """Log in to the contest and return an authenticated session."""
     username, password = load_credentials()
     session = requests.Session()
     session.headers['User-Agent'] = 'Mozilla/5.0'
@@ -56,10 +55,8 @@ def login(cid: int) -> requests.Session:
     resp = session.post(url, data={'username': username, 'password': password}, timeout=15)
 
     if is_auth_failure(resp):
-        # Credentials may be wrong — delete saved file so user is re-prompted next time
         CREDS_FILE.unlink(missing_ok=True)
-        print("Login failed. Credentials removed — please check your username/password.")
-        sys.exit(1)
+        raise AuthError("Login failed. Credentials removed — please check your username/password.")
 
     return session
 
@@ -87,8 +84,7 @@ def prompt_pid_selection(pids: list[str]) -> list[str]:
         print(f"Warning: {invalid} not in problem list, skipping.")
     valid = [p for p in selected if p in pids]
     if not valid:
-        print("No valid problems selected.")
-        sys.exit(1)
+        raise ValueError("No valid problems selected.")
     return valid
 
 
@@ -162,55 +158,103 @@ def to_markdown(pid: str, title: str, info: dict, sections: list) -> str:
     return '\n'.join(lines)
 
 
-def save_problem(cid: int, pid: str, md: str) -> Path:
-    out_dir = OUT_BASE / str(cid)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f'{pid}.md'
-    path.write_text(md, encoding='utf-8')
-    return path
+# ── Sample extraction ─────────────────────────────────────────────────────────
+
+def extract_samples(sections: list) -> tuple[str, str]:
+    def strip_fences(s: str) -> str:
+        lines = s.splitlines()
+        if lines and lines[0].strip().startswith('```'):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == '```':
+            lines = lines[:-1]
+        return '\n'.join(lines)
+
+    first_in = first_out = ''
+    for label, content in sections:
+        key = label.strip().lower()
+        if not first_in and key in SAMPLE_IN:
+            first_in = strip_fences(content)
+        if not first_out and key in SAMPLE_OUT:
+            first_out = strip_fences(content)
+    return first_in, first_out
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Saving ────────────────────────────────────────────────────────────────────
 
-def main():
-    print("HDU Contest Problem Crawler")
-    print("----------------------------")
+def save_problem_dir(target_dir: Path, cid: int, pid: str,
+                     title: str, info: dict, sections: list) -> Path:
+    prob_dir = target_dir / str(cid) / pid
+    prob_dir.mkdir(parents=True, exist_ok=True)
 
-    cid = prompt_cid()
-    session = login(cid)
+    (prob_dir / 'problem.md').write_text(
+        to_markdown(pid, title, info, sections), encoding='utf-8')
 
-    print(f"\nFetching problem list for contest {cid}...")
+    cpp_dest = prob_dir / f'{pid}.cpp'
+    if SKELETON.exists():
+        shutil.copy2(SKELETON, cpp_dest)
+    else:
+        cpp_dest.write_text('', encoding='utf-8')
+
+    first_in, first_out = extract_samples(sections)
+    (prob_dir / 'input.txt').write_text(first_in, encoding='utf-8')
+    (prob_dir / 'output.txt').write_text(first_out, encoding='utf-8')
+    (prob_dir / f'{pid}_input0.txt').write_text(first_in, encoding='utf-8')
+    (prob_dir / f'{pid}_output0.txt').write_text(first_out, encoding='utf-8')
+
+    return prob_dir
+
+
+def save_all_problems_md(target_dir: Path, cid: int,
+                         results: list[tuple[str, str, dict, list]]):
+    parts = [to_markdown(pid, title, info, sections)
+             for pid, title, info, sections in results]
+    out = (target_dir / str(cid) / 'problems.md')
+    out.write_text('\n\n---\n\n'.join(parts), encoding='utf-8')
+    return out
+
+
+# ── Standalone CLI ────────────────────────────────────────────────────────────
+
+if __name__ == '__main__':
+    import argparse, sys, time
+
+    parser = argparse.ArgumentParser(description='Fetch HDU contest problems')
+    parser.add_argument('cid', type=int, help='Contest ID')
+    parser.add_argument('pids', nargs='*', help='Problem IDs (default: all)')
+    parser.add_argument('--target-dir', type=Path, default=None,
+                        help='Output root (default: parent of this script)')
+    args = parser.parse_args()
+
+    target_dir = args.target_dir.resolve() if args.target_dir else (Path(__file__).parent / '..').resolve()
+
     try:
-        pids = get_problem_ids(session, cid)
+        session = login(args.cid)
     except AuthError as e:
-        print(f"Auth error: {e}")
-        sys.exit(1)
+        print(e); sys.exit(1)
 
-    if not pids:
-        print("No problems found. Check the contest ID or your access permissions.")
-        sys.exit(1)
+    try:
+        all_pids = get_problem_ids(session, args.cid)
+    except AuthError as e:
+        print(e); sys.exit(1)
 
-    print(f"Found {len(pids)} problems: {' '.join(pids)}\n")
-    selected = prompt_pid_selection(pids)
+    selected = args.pids if args.pids else all_pids
+    unknown = [p for p in selected if p not in all_pids]
+    if unknown:
+        print(f"Unknown pids: {' '.join(unknown)}"); sys.exit(1)
 
+    results = []
     for pid in selected:
         print(f"Fetching {pid}...", end=' ', flush=True)
         try:
-            title, info, sections = fetch_problem(session, cid, pid)
-            md = to_markdown(pid, title, info, sections)
-            path = save_problem(cid, pid, md)
-            print(f"done  →  {path.relative_to(Path(__file__).parent)}")
-        except AuthError:
-            print("auth failure — stopping.")
-            sys.exit(1)
-        except requests.RequestException as e:
-            print(f"network error: {e}")
+            title, info, sections = fetch_problem(session, args.cid, pid)
+            prob_dir = save_problem_dir(target_dir, args.cid, pid, title, info, sections)
+            results.append((pid, title, info, sections))
+            print(f"done  →  {prob_dir}")
+        except AuthError as e:
+            print(f"auth failure: {e}"); sys.exit(1)
         except Exception as e:
             print(f"error: {e}")
         time.sleep(DELAY)
 
-    print("\nAll done.")
-
-
-if __name__ == '__main__':
-    main()
+    if results:
+        print(f"problems.md  →  {save_all_problems_md(target_dir, args.cid, results)}")
