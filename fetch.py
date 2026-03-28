@@ -2,19 +2,16 @@
 HDU Contest Problem Crawler
 Usage: uv run python fetch.py
 """
-import base64
 import getpass
-import json
 import sys
 import time
 import requests
-from http.cookiejar import MozillaCookieJar
 from bs4 import BeautifulSoup
 from pathlib import Path
 
-COOKIE_FILE = Path(__file__).parent / 'cookie.txt'
+CREDS_FILE = Path(__file__).parent / 'credentials.txt'
 OUT_BASE = Path(__file__).parent / 'output'
-DELAY = 1.0
+DELAY = 0.4
 
 
 class AuthError(Exception):
@@ -23,67 +20,47 @@ class AuthError(Exception):
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
-def check_jwt_expiry(token: str) -> bool:
-    try:
-        payload_b64 = token.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        return time.time() < float(payload.get('exp', 0))
-    except Exception:
-        return False
-
-
 def is_auth_failure(resp) -> bool:
     if 'login' in resp.url:
         return True
-    if 'userpass' in resp.text and '<form' in resp.text:
+    # contest login page contains a password field
+    if 'name="password"' in resp.text and '<form' in resp.text:
         return True
     return False
 
 
-def auto_login(session: requests.Session) -> None:
-    print("Enter your HDU credentials (note: team accounts may need browser cookie export instead).")
+def load_credentials() -> tuple[str, str]:
+    """Load saved credentials, or prompt and save them."""
+    if CREDS_FILE.exists():
+        try:
+            text = CREDS_FILE.read_text().strip()
+            username, password = text.split(':', 1)
+            return username, password
+        except Exception:
+            print("credentials.txt is malformed, please re-enter.")
+
+    print("Enter your HDU contest credentials (saved to credentials.txt for future use).")
     username = input("Username: ").strip()
     password = getpass.getpass("Password: ")
-    resp = session.post(
-        'https://acm.hdu.edu.cn/userloginex.php?action=login',
-        data={'username': username, 'userpass': password, 'login': 'Sign In'},
-        timeout=15,
-    )
-    if is_auth_failure(resp) or 'error' in resp.text.lower() or 'wrong' in resp.text.lower():
-        print("Login failed. Check your credentials.")
-        print("If you're using a team account, export cookies from your browser instead.")
-        sys.exit(1)
-    print("Logged in.")
+    CREDS_FILE.write_text(f"{username}:{password}")
+    return username, password
 
 
-def load_or_login_session() -> requests.Session:
+def login(cid: int) -> requests.Session:
+    """Log in to the contest and return an authenticated session."""
+    username, password = load_credentials()
     session = requests.Session()
     session.headers['User-Agent'] = 'Mozilla/5.0'
 
-    if COOKIE_FILE.exists():
-        try:
-            jar = MozillaCookieJar(str(COOKIE_FILE))
-            jar.load(ignore_discard=True, ignore_expires=True)
-            cookies = {c.name: c.value for c in jar}
-            token = cookies.get('token') or ''
-            if check_jwt_expiry(token):
-                session.cookies.update({k: v for k, v in cookies.items() if v is not None})
-                return session
-            else:
-                print(f"cookie.txt has expired.")
-        except Exception as e:
-            print(f"Could not read cookie.txt: {e}")
-    else:
-        print(f"No cookie.txt found at: {COOKIE_FILE}")
+    url = f'https://acm.hdu.edu.cn/contest/login?cid={cid}'
+    resp = session.post(url, data={'username': username, 'password': password}, timeout=15)
 
-    print(f"Please export cookies from your browser (Netscape format) and save to:")
-    print(f"  {COOKIE_FILE}")
-    choice = input("Or log in with username/password now? [y/N] ").strip().lower()
-    if choice == 'y':
-        auto_login(session)
-    else:
+    if is_auth_failure(resp):
+        # Credentials may be wrong — delete saved file so user is re-prompted next time
+        CREDS_FILE.unlink(missing_ok=True)
+        print("Login failed. Credentials removed — please check your username/password.")
         sys.exit(1)
+
     return session
 
 
@@ -200,14 +177,13 @@ def main():
     print("----------------------------")
 
     cid = prompt_cid()
-    session = load_or_login_session()
+    session = login(cid)
 
     print(f"\nFetching problem list for contest {cid}...")
     try:
         pids = get_problem_ids(session, cid)
     except AuthError as e:
         print(f"Auth error: {e}")
-        print(f"Re-export your cookies and place them at: {COOKIE_FILE}")
         sys.exit(1)
 
     if not pids:
@@ -226,7 +202,6 @@ def main():
             print(f"done  →  {path.relative_to(Path(__file__).parent)}")
         except AuthError:
             print("auth failure — stopping.")
-            print(f"Re-export your cookies and place them at: {COOKIE_FILE}")
             sys.exit(1)
         except requests.RequestException as e:
             print(f"network error: {e}")
