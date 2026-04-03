@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "lxml>=6.0.2",
+    "prompt-toolkit>=3.0.52",
     "requests>=2.33.0",
 ]

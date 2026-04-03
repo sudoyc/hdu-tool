@@ -46,7 +46,8 @@ HELP_TEXT = """\
 Commands:
   use <cid>        — switch contest and login
   fetch [pid ...]  — fetch problems (all if no pids given)
-  submit <pid>     — submit {pid}.cpp for problem pid
+  submit <pid>     — submit {pid}.cpp with live updating output
+  submit <pid> -c  — submit with clean output (no live updates)
   status [n]       — show last n submissions (default 10)
   help             — show this message
   exit / quit      — exit"""
@@ -147,10 +148,13 @@ def cmd_submit(state: State, args: list[str]):
     if not state.require_contest():
         return
     if not args:
-        print("Usage: submit <pid>")
+        print("Usage: submit <pid> [-c]")
         return
 
     pid = args[0]
+    clean = '-c' in args
+    if '-c' in args:
+        args.remove('-c')
 
     # Resolve .cpp file: canonical location first, then cwd fallback
     canonical = state.target_dir / str(state.cid) / pid / f'{pid}.cpp'
@@ -185,17 +189,47 @@ def cmd_submit(state: State, args: list[str]):
 
     print(f"run_id={run_id}, waiting for verdict...", end=' ', flush=True)
 
-    row = _submit.poll_verdict(state.session, state.cid, run_id)
-    verdict = row['verdict']
-    print()
-    print(f"  Run ID  : {row['run_id']}")
-    print(f"  Problem : {row['pid']}")
-    print(f"  Time    : {row['time']}")
-    print(f"  Memory  : {row['memory']}")
-    print(f"  Language: {row['language']}")
-    print(f"  Verdict : {_color_verdict(verdict)}")
+    if not clean:
+        BLOCK_LINES = 6
+        UP = f'\033[{BLOCK_LINES}A'
+        EL = '\033[K'
+        def print_block(row: dict):
+            print(f"  Run ID  : {row['run_id']}{EL}")
+            print(f"  Problem : {row['pid']}{EL}")
+            print(f"  Time    : {row['time']}{EL}")
+            print(f"  Memory  : {row['memory']}{EL}")
+            print(f"  Language: {row['language']}{EL}")
+            print(f"  Verdict : {_color_verdict(row['verdict'])}{EL}", flush=True)
 
-    if verdict == 'Compilation Error':
+        row = None
+        first = True
+        for row in _submit.poll_verdict(state.session, state.cid, run_id):
+            if not first:
+                print(UP, end='')
+            else:
+                print()
+                first = False
+            print_block(row)
+        final_row = row
+    else:
+        # In clean mode, we consume the generator but do not print anything until it finishes
+        final_row = None
+        for row in _submit.poll_verdict(state.session, state.cid, run_id):
+            final_row = row
+        print(f"done\n")
+        if final_row:
+            print(f"  Run ID  : {final_row['run_id']}")
+            print(f"  Problem : {final_row['pid']}")
+            print(f"  Time    : {final_row['time']}")
+            print(f"  Memory  : {final_row['memory']}")
+            print(f"  Language: {final_row['language']}")
+            print(f"  Verdict : {_color_verdict(final_row['verdict'])}")
+
+    if not final_row:
+        print("Error: Could not retrieve verdict.")
+        return
+
+    if final_row['verdict'] == 'Compilation Error':
         print()
         log = _submit.get_ce_log(state.session, state.cid, run_id)
         print(log)

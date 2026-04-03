@@ -42,7 +42,7 @@ uv run python hdu.py [--target-dir PATH]
 
 命令：`use <cid>`、`fetch [pid ...]`、`submit <pid>`、`status [n]`、`help`、`exit`
 
-支持上下方向键历史、Tab 补全命令名和题号。
+支持上下方向键历史、Tab 补全命令名和题号（基于 `prompt_toolkit`，不依赖 shell 的 readline）。
 
 ### 独立运行
 
@@ -64,7 +64,11 @@ uv run python submit.py <cid> <pid> <file> [--language N]
 - 提交端点：`POST https://acm.hdu.edu.cn/contest/submit?cid={cid}&pid={pid}`
 - 表单字段：`language`（0=G++，5=Java）、`code`（源码文本）
 - 无 CSRF token
-- 提交后轮询 `/contest/status?cid={cid}`，取第一行匹配 run_id 的 verdict
+- 提交后轮询 `/contest/status?cid={cid}`（0.2s 间隔），取匹配 run_id 的行
+- `poll_verdict` 是 generator，每次 yield 当前状态行，调用方用 ANSI 光标上移原地刷新整个结果块（Run ID / Time / Memory / Verdict 全部实时更新）
+- Verdict 带颜色：绿色=AC，红色=WA/TLE/MLE/RE，黄色=CE，青色=Judging 等中间状态
+- 提交前获取最新 `run_id`，提交后根据 HTTP 302 状态码确认 HDU 接收（避免无效/短代码提交导致死循环）。通过检查新的 `run_id` 是否严格大于先前的最大值，避免把上一次提交或别人的提交误当成本次提交轮询。
+- 支持 `clean` 模式（`submit 1001 -c`），无多行覆盖动画，静默阻塞直到判题结束并打印最终结果。
 - CE 详情：`GET /contest/compilation-error-log?cid={cid}&rid={run_id}`，解析 `div.compilation-error-log`
 
 ## 题面结构（HTML → Markdown）
@@ -81,4 +85,7 @@ uv run python submit.py <cid> <pid> <file> [--language N]
 - 请求间隔 `DELAY = 0.4s`，避免被封
 - `is_auth_failure()` 检测响应 URL 含 `login` 或响应体含 `name="password"` 来判断鉴权失败
 - 输出目录用 pid 作为文件夹名（如 `1001/`），不转换为字母（A/B/C），适应 HDU 的绝对编号习惯
-- `readline.set_completer_delims(' \t')` 确保 Tab 补全时 pid 不被 `-` 等字符截断
+- `readline.set_completer_delims(' \t')` 确保 Tab 补全时 pid 不被 `-` 等字符截断（已弃用，改用 `prompt_toolkit`）
+- Tab 补全用 `prompt_toolkit` 实现，因为 GNU readline 的 `parse_and_bind('tab: complete')` 在 zsh 下不生效（zsh 拦截 Tab 键）
+- `poll_verdict` 设计为 generator 而非阻塞函数，方便调用方实时刷新显示
+- fetch 覆盖规则：`problem.md`、`problems.md`、`{pid}_input0.txt`、`{pid}_output0.txt` 总是覆盖；`input.txt`、`output.txt`、`{pid}.cpp` 仅首次创建不覆盖（用户可能已修改）
